@@ -4,16 +4,6 @@ import torch.nn as nn
 import numpy as np
 import torch.optim as optim
 
-# Encoder_input    Decoder_input          Decoder_output(预测下一个字符)
-sentences = [['我 是 学 生 P', 'S I am a student', 'I am a student E'],  # S: 开始符号
-             ['我 喜 欢 学 习', 'S I like learning P', 'I like learning P E'],  # E: 结束符号
-             ['我 是 男 生 P', 'S I am a boy', 'I am a boy E']]  # P: 占位符号，如果当前句子不足固定长度用P占位 pad补0
-
-src_vocab = {'P': 0, '我': 1, '是': 2, '学': 3, '生': 4, '喜': 5, '欢': 6, '习': 7, '男': 8}  # 词源字典  字：索引
-src_vocab_len = len(src_vocab.keys())
-tgt_vocab = {'S': 0, 'E': 1, 'P': 2, 'I': 3, 'am': 4, 'a': 5, 'student': 6, 'like': 7, 'learning': 8, 'boy': 9}
-tgt_vocab_len = len(tgt_vocab.keys())
-
 
 def data_split(src_dict, tgt_dict, input_data):
     input_list = []
@@ -24,9 +14,6 @@ def data_split(src_dict, tgt_dict, input_data):
         decoder_input.append([tgt_dict[i] for i in sent_i[1].split()])
         decoder_output.append([tgt_dict[i] for i in sent_i[-1].split()])
     return torch.tensor(input_list), torch.tensor(decoder_input), torch.tensor(decoder_output)
-
-
-enc_inputs, dec_inputs, dec_outputs = data_split(src_vocab, tgt_vocab, sentences)
 
 
 class TransDataset(Dataset):
@@ -48,11 +35,6 @@ class TransDataset(Dataset):
 
     def __getitem__(self, index):
         return self.enc_inputs[index], self.dec_inputs[index], self.dec_outputs[index]
-
-
-data_set = TransDataset(enc_inputs, dec_inputs, dec_outputs)
-
-data_loader = DataLoader(data_set, batch_size=2, shuffle=False)
 
 
 def get_attn_pad_mask(seq_q, seq_k):
@@ -232,20 +214,6 @@ class Encoder(nn.Module):
         return enc_outputs, enc_self_attns
 
 
-#     # 测试
-# # '''
-# inputs=torch.LongTensor([[1, 2, 3, 4, 0],
-#         [1, 2, 8, 4, 0]])
-# # '''
-# encoder=Encoder(src_vocab_len,d_model,n_layers,d_model)
-
-# enc_outputs, enc_self_attns = encoder(inputs)
-# print(enc_outputs)
-
-
-# print(enc_outputs.shape)    # torch.Size([3, 5, 512])
-
-
 class DecoderLayer(nn.Module):
     def __init__(self, d_model, n_heads, d_k, d_v, d_ff):
         super().__init__()
@@ -422,6 +390,12 @@ if __name__ == '__main__':
     tgt_vocab = {'S': 0, 'E': 1, 'P': 2, 'I': 3, 'am': 4, 'a': 5, 'student': 6, 'like': 7, 'learning': 8, 'boy': 9}
     tgt_vocab_len = len(tgt_vocab.keys())
     idx2word = {v: k for k, v in tgt_vocab.items()}
+
+    enc_inputs, dec_inputs, dec_outputs = data_split(src_vocab, tgt_vocab, sentences)
+
+    data_set = TransDataset(enc_inputs, dec_inputs, dec_outputs)
+
+    data_loader = DataLoader(data_set, batch_size=2, shuffle=False)
 
     # transformers参数设置
 
