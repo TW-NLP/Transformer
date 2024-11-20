@@ -4,37 +4,7 @@ import torch.nn as nn
 import numpy as np
 import torch.optim as optim
 
-
-def data_split(src_dict, tgt_dict, input_data):
-    input_list = []
-    decoder_input = []
-    decoder_output = []
-    for sent_i in input_data:
-        input_list.append([src_dict[i] for i in sent_i[0].split()])
-        decoder_input.append([tgt_dict[i] for i in sent_i[1].split()])
-        decoder_output.append([tgt_dict[i] for i in sent_i[-1].split()])
-    return torch.tensor(input_list), torch.tensor(decoder_input), torch.tensor(decoder_output)
-
-
-class TransDataset(Dataset):
-    def __init__(self, enc_inputs, dec_inputs, dec_outputs):
-        """_summary_
-
-        Args:
-            enc_inputs (_type_): _description_
-            dec_inputs (_type_): _description_
-            dec_outputs (_type_): _description_
-        """
-        super().__init__()
-        self.enc_inputs = enc_inputs
-        self.dec_inputs = dec_inputs
-        self.dec_outputs = dec_outputs
-
-    def __len__(self):
-        return len(self.enc_inputs)
-
-    def __getitem__(self, index):
-        return self.enc_inputs[index], self.dec_inputs[index], self.dec_outputs[index]
+from data_convert import data_split, TransDataset
 
 
 def get_attn_pad_mask(seq_q, seq_k):
@@ -99,9 +69,10 @@ class PositionalEncoding(nn.Module):
 class Attention(nn.Module):
     def __init__(self, d_k):
         super().__init__()
+        self.d_k = d_k
 
     def forward(self, Q, K, V, attention_mask):
-        scores = torch.matmul(Q, K.transpose(-1, -2)) / np.sqrt(d_k)
+        scores = torch.matmul(Q, K.transpose(-1, -2)) / np.sqrt(self.d_k)
         scores.masked_fill_(attention_mask, -1e9)
         attn = nn.Softmax(dim=-1)(scores)
 
@@ -120,23 +91,27 @@ class MUltiHeadAttention(nn.Module):
         self.attention = Attention(d_k=d_k)
         self.fc = nn.Linear(n_heads * d_k, d_model)
         self.ln = nn.LayerNorm(d_model)
+        self.n_heads = n_heads
+        self.d_k = d_k
+        self.d_v = d_v
 
     def forward(self, input_Q, input_K, input_V, attn_mask):
         res, batch_size = input_Q, input_Q.size(0)
         Q = self.W_Q(input_Q.float())
         # 变为多头 [batch_size,seq_len,n_heads,d_k]->[batch_size,n_heads,seq_len,d_k]
-        Q = Q.view(batch_size, -1, n_heads, d_k).transpose(1, 2)
+        Q = Q.view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
         K = self.W_K(input_K.float())
-        K = K.view(batch_size, -1, n_heads, d_k).transpose(1, 2)
+        K = K.view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
         V = self.W_V(input_V.float())
-        V = V.view(batch_size, -1, n_heads, d_v).transpose(1, 2)
+        V = V.view(batch_size, -1, self.n_heads, self.d_v).transpose(1, 2)
 
-        attn_mask = attn_mask.unsqueeze(1).repeat(1, n_heads, 1, 1)  # attn_mask : [batch_size, n_heads, len_q, len_k]
+        attn_mask = attn_mask.unsqueeze(1).repeat(1, self.n_heads, 1,
+                                                  1)  # attn_mask : [batch_size, n_heads, len_q, len_k]
 
         context, attn = self.attention(Q, K, V, attn_mask)
         # concat mul head information
 
-        context = context.transpose(1, 2).reshape(batch_size, -1, n_heads * d_k)
+        context = context.transpose(1, 2).reshape(batch_size, -1, self.n_heads * self.d_k)
         output = self.fc(context)
         return self.ln(output + res), attn
 
@@ -163,7 +138,7 @@ class FF(nn.Module):
 
 
 class Encoderlayer(nn.Module):
-    def __init__(self, d_model, n_heads, d_k, d_v):
+    def __init__(self, d_model, n_heads, d_k, d_v, d_ff):
         super().__init__()
         self.mul_attention = MUltiHeadAttention(d_model=d_model, n_heads=n_heads, d_k=d_k, d_v=d_v)
         self.feed = FF(d_model=d_model, d_ff=d_ff)
@@ -188,7 +163,7 @@ class Encoder(nn.Module):
         self.src_embedding = nn.Embedding(src_vocab_size, embedding_dim)
         self.position = PositionalEncoding(d_model=embedding_dim, device=device)
         self.layers = nn.ModuleList(
-            [Encoderlayer(d_model, n_heads, d_k, d_v) for i in range(encode_layers)])
+            [Encoderlayer(d_model, n_heads, d_k, d_v, d_ff) for i in range(encode_layers)])
         self.ff = FF(d_model, d_ff)
         self.device = device
 
@@ -304,20 +279,21 @@ class Decoder(nn.Module):
 
 class Transformer(nn.Module):
     def __init__(self, src_vocab_size, embedding_dim, encode_layers, d_model, tgt_vocab_len, n_heads, d_k, d_v, d_ff,
+                 n_layers,
                  device):
-        """_summary_
+        """
 
-        Args:
-            src_vocab_size (_type_): _description_
-            embedding_dim (_type_): _description_
-            encode_layers (_type_): _description_
-            d_model (_type_): _description_
-            tgt_vocab_len (_type_): _description_
-            n_heads (_type_): _description_
-            d_k (_type_): _description_
-            d_v (_type_): _description_
-            d_ff (_type_): _description_
-            device (_type_): _description_
+        :param src_vocab_size:
+        :param embedding_dim:
+        :param encode_layers:
+        :param d_model:
+        :param tgt_vocab_len:
+        :param n_heads:
+        :param d_k:
+        :param d_v:
+        :param d_ff:
+        :param n_layers:
+        :param device:
         """
 
         super().__init__()
@@ -335,108 +311,3 @@ class Transformer(nn.Module):
         # 将batch数据展平为一句话
         dec_outputs = dec_outputs.view(-1, dec_outputs.size(-1))
         return dec_outputs
-
-
-def train(model, data_loader, loss, device):
-    for bacth in data_loader:
-        optimizer.zero_grad()
-        enc_inputs, dec_inputs, dec_outputs = bacth
-        enc_inputs = enc_inputs.to(device)
-        dec_inputs = dec_inputs.to(device)
-        dec_outputs = dec_outputs.to(device)
-
-        logits = model(enc_inputs, dec_inputs)
-        loss_data = loss(logits, dec_outputs.view(-1))
-        loss_data.backward()
-        print(loss_data)
-        optimizer.step()
-
-
-def test(model, tgt_len, enc_input, start_symbol, device):
-    enc_input = enc_input.to(device)
-
-    # 先得到Encoder的输出
-    enc_outputs, enc_self_attns = model.Encoder(enc_input)  # [1,src_len, d_model] []
-    enc_outputs = enc_outputs.to(device)
-
-    dec_input = torch.zeros(1, tgt_len).type_as(enc_input.data).to(device)  # [1, tgt_len]
-
-    next_symbol = start_symbol
-
-    for i in range(0, tgt_len):
-        dec_input[0][i] = next_symbol
-
-        # 然后一个一个解码
-        dec_outputs, _, _ = model.Decoder(dec_input, enc_input, enc_outputs)  # [1, tgt_len, d_model]
-
-        projected = model.linear(dec_outputs)  # [1, tgt_len, tgt_voc_size]
-        prob = projected.squeeze(0).max(dim=-1, keepdim=False)[1]  # [tgt_len][索引]
-        next_word = prob.data[i]  # 不断地预测所有字，但是只取下一个字
-        next_symbol = next_word.item()
-    return dec_input
-
-
-if __name__ == '__main__':
-    device = "cuda" if torch.cuda.is_available else "cpu"
-
-    # Encoder_input    Decoder_input          Decoder_output(预测下一个字符)
-    sentences = [['我 是 学 生 P', 'S I am a student', 'I am a student E'],  # S: 开始符号
-                 ['我 喜 欢 学 习', 'S I like learning P', 'I like learning P E'],  # E: 结束符号
-                 ['我 是 男 生 P', 'S I am a boy', 'I am a boy E']]  # P: 占位符号，如果当前句子不足固定长度用P占位 pad补0
-
-    src_vocab = {'P': 0, '我': 1, '是': 2, '学': 3, '生': 4, '喜': 5, '欢': 6, '习': 7, '男': 8}  # 词源字典  字：索引
-    src_idx2word = {v: k for k, v in src_vocab.items()}
-    src_vocab_len = len(src_vocab.keys())
-    tgt_vocab = {'S': 0, 'E': 1, 'P': 2, 'I': 3, 'am': 4, 'a': 5, 'student': 6, 'like': 7, 'learning': 8, 'boy': 9}
-    tgt_vocab_len = len(tgt_vocab.keys())
-    idx2word = {v: k for k, v in tgt_vocab.items()}
-
-    enc_inputs, dec_inputs, dec_outputs = data_split(src_vocab, tgt_vocab, sentences)
-
-    data_set = TransDataset(enc_inputs, dec_inputs, dec_outputs)
-
-    data_loader = DataLoader(data_set, batch_size=2, shuffle=False)
-
-    # transformers参数设置
-
-    d_model = 512  # 字 Embedding 的维度
-    d_ff = 2048  # 前向传播隐藏层维度
-    d_k = d_v = 64  # K(=Q), V的维度. V的维度可以和K=Q不一样
-    n_layers = 6  # 有多少个encoder和decoder
-    n_heads = 8  # Multi-Head Attention设置为8
-    epochs = 100
-
-    model = Transformer(src_vocab_len, d_model, n_layers, d_model, tgt_vocab_len, n_heads, d_k, d_v, d_ff, device)
-    model = model.to(device)
-    loss = nn.CrossEntropyLoss()
-
-    optimizer = optim.SGD(model.parameters(), lr=1e-4, momentum=0.99)
-
-    for epoch in range(epochs):
-        train(model, data_loader, loss, device)
-
-    with torch.no_grad():
-
-        enc_inputs, _, _ = next(iter(data_loader))
-
-        enc_inputs = enc_inputs[0]
-        test_line = enc_inputs.cpu().numpy().tolist()
-        enc_str = ""
-        for en_i in test_line:
-            enc_str += src_idx2word[en_i]
-
-        print(enc_str)
-
-        enc_inputs = enc_inputs.to(device)
-        # enc_input只取一个例子[1]
-        # 预测dec_input
-        # dec_input全部预测出来之后，在输入Model预测 dec_output
-        predict_dec_input = test(model, tgt_vocab_len, enc_inputs[1].view(1, -1), start_symbol=tgt_vocab["S"],
-                                 device=device)  # [1, tgt_len]
-
-        out_puts = ""
-        test_out = predict_dec_input[0].cpu().numpy().tolist()
-        for i in test_out:
-            out_puts += idx2word[i]
-
-        print(out_puts)
